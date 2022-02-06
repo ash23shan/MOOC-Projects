@@ -1,0 +1,129 @@
+---
+title: Developing a Computational Phenotyping Algorithm to Identify Patients with Hypertension
+author: "Ashwini Shanbhogue"
+date: "12/7/2021"
+output: html_document
+---
+
+This is a Practical Application Project that was submitted in completion of Course 3: Identifying Patient Populations of the Clinical Data Science Specialization offered by the University of Colorado System in partnership with Google Cloud on the Coursera platform.
+
+Aim: To developing a computational phenotyping algorithm to identify patients with Hypertension.
+
+#Setting up the environment by loading the required packages and setting up a connection to the Google BigQuery project to access MIMIC-III demo data.
+```{r}
+library(tidyverse)
+library(magrittr)
+library(bigrquery)
+library(caret)
+
+con <- DBI::dbConnect(drv = bigquery(), project = "learnclinicaldatascience")
+```
+
+A gold standard population, which is a set of records that have been manually reviewed to define the subset of population that does or does not have the condition, has been provided on Google Big Query as a part of the project. All the algorithms developed will be tested against this population.
+
+#Creating a table using the gold standard population
+```{r}
+hypertension <- tbl(con, "course3_data.hypertension_goldstandard")
+```
+
+To avoid overfitting, the gold standard population of 100 records will be split into a training (80 records) and a testing population (20 records).
+
+#Creating training and testing populations from the gold standard population
+```{r}
+training <- hypertension %>% collect() %>% sample_n(80)
+                                                                                
+testing <- hypertension %>% filter(!SUBJECT_ID %in% training_population$SUBJECT_ID)
+```
+
+A wrapper function, that was provided during the course, will be used to determine algorithm performance evaluation metrics like Sensitivity, Specificity, Positive Predictive Value and Negative Predictive Value and to create the 2*2 table that is used to calculate them.
+
+#Defining the wrapper function used to calculate the required statistics.
+```{r}
+getStats <- function(df, ...){df %>% select_(.dots = lazyeval::lazy_dots(...)) %>% mutate_all(funs(factor(., levels = c(1,0)))) %>% table() %>% confusionMatrix()}
+```
+
+Testing the individual data type- ICD9 CODE
+
+```{r}
+diagnoses_icd <- tbl(con, "mimic3_demo.DIAGNOSES_ICD")
+
+icd <- diagnoses_icd %>% filter(ICD9_CODE %in% c("4019", "4011", "36504", "5723", "3482", "64610", "40591", "40501", "4010", "4160", "45939", "64612", "64611", "64203", "64204", "64292", "64291", "40509", "64622", "64621", "64620", "40599", "64272", "64270", "64233", "64234", "40511", "40519", "45933", "45931", "45932", "45930", "64613", "64614", "7962", "64200", "64202", "64201", "64290", "64293", "64294", "64223", "64221", "64224", "64220", "64222", "64623", "64624", "99791", "64273", "64274", "64271", "64230", "64232", "64231")) %>% distinct(SUBJECT_ID) %>% mutate(icd = 1) %>% collect()
+
+training %<>% left_join(icd, copy = TRUE) %>% mutate(icd = coalesce(icd, 0)) %>% collect() %>% getStats(icd, HYPERTENSION)
+```
+
+Testing the individual data type- Medication, 'Lisinopril'
+
+```{r}
+prescriptions <- tbl(con, "mimic3_demo.PRESCRIPTIONS")
+
+lisinopril <- prescriptions %>% filter(tolower(DRUG) %like% "%lisinopril%") %>% distinct(SUBJECT_ID) %>% mutate(lisinopril = 1)
+
+training %<>% left_join(lisinopril, copy= TRUE) %>% mutate(lisinopril = coalesce(lisinopril, 0)) %>% collect() %>% getStats(lisinopril, HYPERTENSION)
+```
+
+Testing the individual data type- ITEMID
+
+```{r}
+chartevents <- tbl(con, "mimic3_demo.CHARTEVENTS")
+
+systolic <- chartevents %>% filter(ITEMID %in% c(3317, 6, 6701, 3323, 3321, 455, 3325, 3319, 442, 666, 3313, 492, 3315, 51, 7643, 482, 484, 480, 228152, 220059, 226852, 226850, 220050, 227243, 220179, 225309, 224167)) %>% distinct(SUBJECT_ID) %>% mutate(systolic = 1)
+
+training %<>% left_join(systolic, copy = TRUE) %>% mutate(systolic = coalesce(systolic, 0)) %>% collect() %>% getStats(systolic, HYPERTENSION)
+```
+
+Data manipulations
+Temporal manipulation- First instance of systolic blood pressure ITEM IDs above 140mm Hg
+
+```{r}
+chartevents <- tbl(con, "mimic3_demo.CHARTEVENTS")
+d_items <- tbl(con, "mimic3_demo.D_ITEMS")
+
+systolic_over140_first <- chartevents %>% inner_join(d_items, by = c("ITEMID" = "ITEMID"), suffix = c("_c","_i")) %>% filter(ITEMID %in% c(3317, 6, 6701, 3323, 3321, 455, 3325, 3319, 442, 666, 3313, 492, 3315, 51, 7643, 482, 484, 480, 228152, 220059, 226852, 226850, 220050, 227243, 220179, 225309, 224167)) %>% group_by(SUBJECT_ID) %>% mutate(earliest_pressure = min(CHARTTIME, na.rm = TRUE)) %>% filter(CHARTTIME == earliest_pressure) %>% mutate(systolic_over140_first = case_when(VALUENUM >= 140 ~ 1, TRUE ~ 0)) %>% select(SUBJECT_ID, systolic_over140_first)
+
+training %>% left_join(systolic_over140_first, copy = TRUE) %>% mutate(systolic_over140_first = coalesce(systolic_over140_first, 0)) %>% collect() %>% getStats(systolic_over140_first, HYPERTENSION)
+```
+
+Frequency and Value manipulations- Threshholding: 2+ counts of systolic blood pressure ITEM IDs above 140mm Hg
+
+```{r}
+chartevents <- tbl(con, "mimic3_demo.CHARTEVENTS")
+d_items <- tbl(con, "mimic3_demo.D_ITEMS")
+
+systolic_over140_min2 <- chartevents %>% inner_join(d_items, by = c("ITEMID" = "ITEMID"), suffix = c("_c","_i")) %>% filter(ITEMID %in% c(3317, 6, 6701, 3323, 3321, 455, 3325, 3319, 442, 666, 3313, 492, 3315, 51, 7643, 482, 484, 480, 228152, 220059, 226852, 226850, 220050, 227243, 220179, 225309, 224167)) %>% group_by(SUBJECT_ID) %>% mutate(systolic_over140_counter = case_when(VALUENUM >= 140 ~ 1, TRUE ~0)) %>% summarise(systolic_over140_count = sum(systolic_over140_counter, na.rm = TRUE)) %>% mutate(systolic_over140_min2 = case_when(systolic_over140_count >= 2 ~ 1, TRUE ~ 0)) %>% select(SUBJECT_ID, systolic_over140_min2)
+
+training %<>% left_join(systolic_over140_min2, copy = TRUE) %>% mutate(systolic_over140_min2 = coalesce(systolic_over140_min2, 0)) %>% collect() 
+
+training %>% collect() %>% getStats(systolic_over140_min2, HYPERTENSION)
+```
+
+Data combinations
+2+ counts of systolic blood pressure above 140mm Hg AND any ICD9 CODE
+
+```{r}
+diagnoses_icd <- tbl(con, "mimic3_demo.DIAGNOSES_ICD")
+chartevents <- tbl(con, "mimic3_demo.CHARTEVENTS")
+d_items <- tbl(con, "mimic3_demo.D_ITEMS")
+
+icd <- diagnoses_icd %>% filter(ICD9_CODE %in% c("4019", "4011", "36504", "5723", "3482", "64610", "40591", "40501", "4010", "4160", "45939", "64612", "64611", "64203", "64204", "64292", "64291", "40509", "64622", "64621", "64620", "40599", "64272", "64270", "64233", "64234", "40511", "40519", "45933", "45931", "45932", "45930", "64613", "64614", "7962", "64200", "64202", "64201", "64290", "64293", "64294", "64223", "64221", "64224", "64220", "64222", "64623", "64624", "99791", "64273", "64274", "64271", "64230", "64232", "64231")) %>% distinct(SUBJECT_ID) %>% mutate(icd = 1) %>% collect()
+
+systolic_over140_min2 <- chartevents %>% inner_join(d_items, by = c("ITEMID" = "ITEMID"), suffix = c("_c","_i")) %>% filter(ITEMID %in% c(3317, 6, 6701, 3323, 3321, 455, 3325, 3319, 442, 666, 3313, 492, 3315, 51, 7643, 482, 484, 480, 228152, 220059, 226852, 226850, 220050, 227243, 220179, 225309, 224167)) %>% group_by(SUBJECT_ID) %>% mutate(systolic_over140_counter = case_when(VALUENUM >= 140 ~ 1, TRUE ~0)) %>% summarise(systolic_over140_count = sum(systolic_over140_counter, na.rm = TRUE)) %>% mutate(systolic_over140_min2 = case_when(systolic_over140_count >= 2 ~ 1, TRUE ~ 0)) %>% select(SUBJECT_ID, systolic_over140_min2)
+
+training %>% left_join(icd, copy = TRUE) %>% left_join(systolic_over140_min2, copy = TRUE) %>% mutate(icd = coalesce(icd, 0), systolic_over140_min2 = coalesce(systolic_over140_min2, 0)) %>% mutate(icd_and_systolic_over140_min2 = case_when(icd == 1 && systolic_over140_min2 == 1 ~ 1, TRUE ~ 0)) %>% collect() %>% getStats(icd_and_systolic_over140_min2, HYPERTENSION)
+```
+
+Data combinations
+2+ counts of systolic blood pressure above 140mm Hg OR any ICD9 CODE
+
+```{r}
+diagnoses_icd <- tbl(con, "mimic3_demo.DIAGNOSES_ICD")
+chartevents <- tbl(con, "mimic3_demo.CHARTEVENTS")
+d_items <- tbl(con, "mimic3_demo.D_ITEMS")
+
+icd <- diagnoses_icd %>% filter(ICD9_CODE %in% c("4019", "4011", "36504", "5723", "3482", "64610", "40591", "40501", "4010", "4160", "45939", "64612", "64611", "64203", "64204", "64292", "64291", "40509", "64622", "64621", "64620", "40599", "64272", "64270", "64233", "64234", "40511", "40519", "45933", "45931", "45932", "45930", "64613", "64614", "7962", "64200", "64202", "64201", "64290", "64293", "64294", "64223", "64221", "64224", "64220", "64222", "64623", "64624", "99791", "64273", "64274", "64271", "64230", "64232", "64231")) %>% distinct(SUBJECT_ID) %>% mutate(icd = 1) %>% collect()
+
+systolic_over140_min2 <- chartevents %>% inner_join(d_items, by = c("ITEMID" = "ITEMID"), suffix = c("_c","_i")) %>% filter(ITEMID %in% c(3317, 6, 6701, 3323, 3321, 455, 3325, 3319, 442, 666, 3313, 492, 3315, 51, 7643, 482, 484, 480, 228152, 220059, 226852, 226850, 220050, 227243, 220179, 225309, 224167)) %>% group_by(SUBJECT_ID) %>% mutate(systolic_over140_counter = case_when(VALUENUM >= 140 ~ 1, TRUE ~0)) %>% summarise(systolic_over140_count = sum(systolic_over140_counter, na.rm = TRUE)) %>% mutate(systolic_over140_min2 = case_when(systolic_over140_count >= 2 ~ 1, TRUE ~ 0)) %>% select(SUBJECT_ID, systolic_over140_min2)
+
+training %>% left_join(icd, copy = TRUE) %>% left_join(systolic_over140_min2, copy = TRUE) %>% mutate(icd = coalesce(icd, 0), systolic_over140_min2 = coalesce(systolic_over140_min2, 0)) %>% mutate(icd_or_systolic_over140_min2 = case_when(icd == 1 | systolic_over140_min2 == 1 ~ 1, TRUE ~ 0)) %>% collect() %>% getStats(icd_or_systolic_over140_min2, HYPERTENSION)
+```
+

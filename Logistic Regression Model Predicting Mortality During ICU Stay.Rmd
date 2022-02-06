@@ -1,0 +1,125 @@
+---
+title: "Practical Application Project"
+author: "Ashwini Shanbhogue"
+date: "1/14/2022"
+output: html_document
+---
+
+This is a Practical Application Project that was submitted in completion of Course 5: Predictive Modeling and Transforming Clinical Practice of the Clinical Data Science Specialization offered by the University of Colorado System in partnership with Google Cloud on the Coursera platform.
+
+Aim:
+To build a logistic regression model that predicts mortality (outcome) based on 4 predictors:
+Gender
+Age at admission
+A diagnosis of ‘Coronary atherosclerosis of native coronary 	artery’ indicated by ICD9 code 41401
+Maximum value of Troponin I during the first 24 hours in the 	ICU
+
+Defining the population:
+In the MIMIC III dataset, there are patients who have multiple hospitalizations and multiple ICU stays per hospitalization. Since I would like to represent each patient with only one set of data points, I will define my population as the first ICU stay for each patient during their first hospitalization.
+Another reason why I am picking this subset of data is, I want to build a model that predicts mortality in patients who are atherosclerotic but haven’t been diagnosed when entering the hospital. Since an exploration of the ‘DIAGNOSIS’ column in ‘ADMISSIONS’ table did not yield any patients with atherosclerosis and since ICD9 codes are assigned at the time of discharge, it is reasonable to assume that these patients had not been diagnosed with atherosclerosis at the time of admission. 
+Within this subset of patients, I would like to determine the contribution of age, gender and a spike in Troponin I levels (which happens most commonly during myocardial infarction), during their first ICU stay to mortality (the diagnosis of atherosclerosis might happen before subsequent ICU stays).
+
+#setting up the environment
+```{r}
+library(tidyverse)
+library(bigrquery)
+library(magrittr)
+library(rsample)
+library(plotROC)
+
+con <- DBI::dbConnect(drv = bigquery(), project = "learnclinicaldatascience")
+
+admissions <- tbl(con, 'mimic3_demo.ADMISSIONS') %>% collect()
+icustays <- tbl(con, "mimic3_demo.ICUSTAYS") %>% collect()
+patients <- tbl(con, "mimic3_demo.PATIENTS") %>% collect()
+diagnoses_icd <- tbl(con, "mimic3_demo.DIAGNOSES_ICD") %>% collect()
+d_labitems <- tbl(con, "mimic3_demo.D_LABITEMS") %>% collect()
+labevents <- tbl(con, "mimic3_demo.LABEVENTS") %>% collect()
+```
+
+#defining the population
+```{r}
+first_hospitalization <- admissions %>% group_by(SUBJECT_ID) %>% filter(ADMITTIME == min(ADMITTIME)) %>% ungroup() %>% select(SUBJECT_ID, HADM_ID, DIAGNOSIS, ADMITTIME, HOSPITAL_EXPIRE_FLAG)
+
+analytic_dataset <- icustays %>% inner_join(first_hospitalization, by = c("SUBJECT_ID" = "SUBJECT_ID", "HADM_ID" = "HADM_ID")) %>% group_by(SUBJECT_ID, HADM_ID) %>% filter(INTIME == min(INTIME)) %>% ungroup()
+```
+
+Defining the outcome:
+The outcome is death during the first ICU stay of the first hospitalization for each patient. The ‘HOSPITAL_EXPIRE_FLAG’ in the ‘ADMISSIONS’ table will be used to define the outcome.
+
+#defining the outcome
+```{r}
+analytic_dataset %<>% select(SUBJECT_ID, HADM_ID, ICUSTAY_ID, death_outcome= HOSPITAL_EXPIRE_FLAG)
+```
+
+Defining the predictors:
+
+#defining gender
+```{r}
+gender <- patients %>% select(SUBJECT_ID, GENDER) %>% mutate(male = case_when(GENDER == "M" ~ 1, TRUE ~ 0)) %>% select(SUBJECT_ID, male)
+```
+
+#defining age at admission
+```{r}
+date_of_birth <- patients %>% select(SUBJECT_ID, DOB)
+
+age_at_admission <- first_hospitalization %>% left_join(date_of_birth) %>% mutate(age_at_admission = round(as.numeric((ADMITTIME - DOB)/365.25))) %>% select(SUBJECT_ID, HADM_ID, age_at_admission)
+```
+
+#atherosclerosis
+```{r}
+atherosclerosis <- diagnoses_icd %>% filter(ICD9_CODE == "41401") %>% distinct(SUBJECT_ID) %>% mutate(atherosclerosis = 1)
+```
+
+#tropI
+```{r}
+d_labitems %>% filter(str_detect(LABEL, pattern = regex("Troponin I", ignore_case = TRUE)))
+
+icu_admission_time <- icustays %>% select(SUBJECT_ID, HADM_ID, ICUSTAY_ID, INTIME)
+
+tropI <- labevents %>% filter(ITEMID == 51002) %>% select(SUBJECT_ID, HADM_ID, CHARTTIME, VALUENUM) %>% inner_join(icu_admission_time) %>% mutate(end_time = INTIME + 24*3600) %>% filter(CHARTTIME >= INTIME & CHARTTIME <= end_time) %>% group_by(SUBJECT_ID, HADM_ID, ICUSTAY_ID) %>% summarise(max_first24hr_tropI = max(VALUENUM))
+```
+
+#building the analytic dataset
+```{r}
+analytic_dataset <- analytic_dataset %>% left_join(gender) %>% left_join(age_at_admission) %>% left_join(tropI) %>% left_join(atherosclerosis) %>% mutate(atherosclerosis = case_when(is.na(atherosclerosis) ~ 0, TRUE ~ atherosclerosis))
+```
+
+#building training and testing datasets
+```{r}
+set.seed(2020)
+
+data_split <- initial_split(analytic_dataset, prop = 7/10)
+
+training_data <- training(data_split)
+testing_data <- testing(data_split)
+```
+
+#building the logistic regression model
+```{r}
+model <- training_data %>% glm(formula = death_outcome ~ male + age_at_admission + max_first24hr_tropI + atherosclerosis, family = "binomial")
+
+summary(model)
+```
+
+#evaluating the model with training data
+```{r}
+training_data$predicted_outcome <- predict(model, training_data, type = "response")
+
+training_roc <- training_data %>% ggplot(aes(m = predicted_outcome, d = death_outcome)) + geom_roc(n.cuts = 10, labels=F, labelround = 4) + style_roc(theme = theme_grey) 
+
+training_roc
+
+calc_auc(training_roc)$AUC*100
+```
+
+#evaluating the model with testing data
+```{r}
+testing_data$predicted_outcome <- predict(model, testing_data, type = "response")
+
+testing_roc <- testing_data %>% ggplot(aes(m = predicted_outcome, d = death_outcome)) + geom_roc(n.cuts = 10, labels=F, labelround = 4) + style_roc(theme = theme_grey) 
+
+testing_roc
+
+calc_auc(testing_roc)$AUC*100
+```

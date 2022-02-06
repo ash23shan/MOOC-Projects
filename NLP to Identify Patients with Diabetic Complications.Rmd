@@ -1,0 +1,99 @@
+---
+title: "Course 4- Practical Application Project"
+author: "Ashwini Shanbhogue"
+date: "12/27/2021"
+output: html_document
+---
+
+This is a Practical Application Project that was submitted in completion of Course 4: Clinical Natural Language Processing of the Clinical Data Science Specialization offered by the University of Colorado System in partnership with Google Cloud on the Coursera platform.
+
+**Aim:** To identify which notes, from a subset of MIMIC III data housed in Google Big Query cloud platform, identify patients who have diabetic complications of neuropathy, nephropathy, and/or retinopathy and which type of complication each note identifies.
+
+Technique: I will be using the 'Keyword windows' technique to achieve the above.
+
+Note type: The type of notes that have been provided for mining, 'History and Physical', are optimal to look for complications of a disease.
+
+Initial keyword: Diabetes/ Diabetic 
+This is the initial keyword/s I have chosen to identify Diabetic patients with Neuropathy, Nephropathy and/or Retinopathy, after manually reviewing a few notes.
+
+Initial window size: 60 words (30 before and 30 after the initial keyword/s) 
+Since I am looking for symptoms/ complications of the disease, I will be using a rather large window. This should help capture cases where the relevant information is 1 or 2 sentences away, as is usually the case with symptoms or complications of disease.
+
+Regular expression: "(?\<[a-zA-Z])diabet(es\|ic)?(?[a-zA-z])" 
+This regular expression will identify the keywords, ‘diabetes’ or ‘diabetic’ by identifying the root word, ‘diabet’ followed by ‘es’ or (as indicated by ‘|’) ‘ic’. The ‘?’ at the end of the keyword specifies that the regex be matched if there is 0 or 1 occurrence of the target word. The keywords are also preceded and followed by look ahead and look behind groups. The look behind group, ‘?<![a-zA-Z]’ translates to- Only match the keywords if they are not preceded by upper- and lower-case A to Z. Similarly, the look ahead group, ‘?![a-zA-Z]’ translates to- Only match the keywords if they are not followed by upper- and lower-case A to Z.
+In addition, the ‘ignore_case’ flag will be enabled, to make the  regex case- insensitive.
+
+#setting up the environment
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(bigrquery)
+library(caret)
+
+con <- DBI::dbConnect(drv = bigquery(), project = "learnclinicaldatascience")
+
+DIABETES_NOTES <- tbl(con, "course4_data.diabetes_notes") %>% collect()
+```
+
+#defining extract text window function
+
+```{r}
+extract_text_window <- function(dataframe, keyword, half_window_size) {dataframe %>% group_by(NOTE_ID) %>% mutate(WORDS = TEXT) %>% separate_rows(WORDS, sep = "[ \n]+") %>% mutate(INDEX = seq(from = 1, to = n(), by = 1.0), WINDOW_START = case_when(INDEX - half_window_size < 1 ~ 1, TRUE ~ INDEX - half_window_size), WINDOW_END = case_when(INDEX + half_window_size > max(INDEX) ~ max(INDEX), TRUE ~ INDEX + half_window_size), WINDOW = word(string = TEXT, start = WINDOW_START, end = WINDOW_END, sep = "[ \n]+")) %>% ungroup() %>% filter(str_detect(string = WORDS, pattern = regex(keyword, ignore_case = TRUE)))}
+```
+
+#using the intial keyword regex to select the keyword window
+
+```{r}
+DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30)
+```
+
+#using the keywords, 'family history' to identify and filter out unrelated patient (family member with disease)
+
+```{r}
+DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30) %>% mutate(exclude = case_when(str_detect(WINDOW, regex(pattern = "family history?", ignore_case = TRUE)) ~ 1, TRUE ~ 0)) %>% filter(exclude != 1)
+```
+
+#creating columns where the value is 1 if a particular keyword is present and 0 if not. 'Complications' identifies keyword windows where the keyword for any of the three complications is present and 'neuro', 'nephro', 'retino' identify the windows where the keywords for neuropathy, nephropathy and retinopathy are present respectively.
+
+```{r}
+DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30) %>% mutate(exclude = case_when(str_detect(WINDOW, regex(pattern = "family history?", ignore_case = TRUE)) ~ 1, TRUE ~ 0)) %>% filter(exclude != 1) %>% mutate(complications = case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])(neuropath(y|ic)?|nephropath(y|ic)?|retinopath(y|ic)?)(?![a-zA-z])", ignore_case = TRUE)) ~ 1, TRUE ~ 0), neuro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])neuropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), nephro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])nephropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), retino= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])retinopath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0))
+```
+
+#grouping keyword windows by NOTE ID and setting the deafult value to 1 (positive) for a particular NOTE ID if keyword windows for the same NOTE ID have both 1 and 0 values.
+
+```{r}
+DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30) %>% mutate(exclude = case_when(str_detect(WINDOW, regex(pattern = "family history?", ignore_case = TRUE)) ~ 1, TRUE ~ 0)) %>% filter(exclude != 1) %>% mutate(complications = case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])(neuropath(y|ic)?|nephropath(y|ic)?|retinopath(y|ic)?)(?![a-zA-z])", ignore_case = TRUE)) ~ 1, TRUE ~ 0), neuro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])neuropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), nephro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])nephropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), retino= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])retinopath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0)) %>% group_by(NOTE_ID) %>% mutate(any_complication= case_when(sum(complications) >= 1 ~ 1, TRUE ~ 0), neuropathy= case_when(sum(neuro) >= 1 ~ 1, TRUE ~ 0), nephropathy= case_when(sum(nephro) >= 1 ~ 1, TRUE ~ 0), retinopathy= case_when(sum(retino) >= 1 ~ 1, TRUE ~ 0))
+```
+
+#selecting only the first value of a keyword window for each NOTE ID and ungrouping to avoid carrying over the grouping to future steps
+
+```{r}
+DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30) %>% mutate(exclude = case_when(str_detect(WINDOW, regex(pattern = "family history?", ignore_case = TRUE)) ~ 1, TRUE ~ 0)) %>% filter(exclude != 1) %>% mutate(complications = case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])(neuropath(y|ic)?|nephropath(y|ic)?|retinopath(y|ic)?)(?![a-zA-z])", ignore_case = TRUE)) ~ 1, TRUE ~ 0), neuro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])neuropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), nephro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])nephropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), retino= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])retinopath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0)) %>% group_by(NOTE_ID) %>% mutate(any_complication= case_when(sum(complications) >= 1 ~ 1, TRUE ~ 0), neuropathy= case_when(sum(neuro) >= 1 ~ 1, TRUE ~ 0), nephropathy= case_when(sum(nephro) >= 1 ~ 1, TRUE ~ 0), retinopathy= case_when(sum(retino) >= 1 ~ 1, TRUE ~ 0)) %>% slice(1) %>% ungroup()
+```
+
+#creating a dataframe by putting all the steps above together and selecting only the NOTE ID column and the columns that identify the presence of any of three complications and the presence of the each of the three complications individually 
+
+```{r}
+ANY_COMPLICATION <- DIABETES_NOTES %>% extract_text_window(keyword = "(?<![a-zA-Z])diabet(es|ic)?(?![a-zA-z])", half_window_size = 30) %>% mutate(exclude = case_when(str_detect(WINDOW, regex(pattern = "family history?", ignore_case = TRUE)) ~ 1, TRUE ~ 0)) %>% filter(exclude != 1) %>% mutate(complications = case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])(neuropath(y|ic)?|nephropath(y|ic)?|retinopath(y|ic)?)(?![a-zA-z])", ignore_case = TRUE)) ~ 1, TRUE ~ 0), neuro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])neuropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), nephro= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])nephropath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0), retino= case_when(str_detect(WINDOW, regex("(?<![a-zA-Z])retinopath(y|ic)?(?![a-zA-z])", ignore_case = TRUE)) ~1, TRUE ~0)) %>% group_by(NOTE_ID) %>% mutate(any_complication= case_when(sum(complications) >= 1 ~ 1, TRUE ~ 0), neuropathy= case_when(sum(neuro) >= 1 ~ 1, TRUE ~ 0), nephropathy= case_when(sum(nephro) >= 1 ~ 1, TRUE ~ 0), retinopathy= case_when(sum(retino) >= 1 ~ 1, TRUE ~ 0)) %>% slice(1) %>% ungroup() %>% select(NOTE_ID, any_complication, neuropathy, nephropathy, retinopathy)
+```
+
+#defining the diabetes gold standard dataset provided in big query and the getStats function to calculate performance metrics of comparison between any_complication dataset and the gold standard
+
+```{r}
+DIABETES_GOLDSTANDARD <- tbl(con, "course4_data.diabetes_goldstandard")
+
+getStats <- function(df, ...){df %>% select_(.dots = lazyeval::lazy_dots(...)) %>% mutate_all(funs(factor(., levels = c(1,0)))) %>% table() %>% confusionMatrix()}
+```
+
+#calculating the number of cases where the presence of all of the three complications and/or the presence of any of the three complications was identified correctly
+
+```{r}
+ANY_COMPLICATION %>% left_join(all_of(DIABETES_GOLDSTANDARD), copy= TRUE) %>% collect() %>% getStats(any_complication, ANY_DIABETIC_COMPLICATION)
+
+ANY_COMPLICATION %>% left_join(all_of(DIABETES_GOLDSTANDARD), copy= TRUE) %>% collect() %>% getStats(neuropathy, DIABETIC_NEUROPATHY)
+
+ANY_COMPLICATION %>% left_join(all_of(DIABETES_GOLDSTANDARD), copy= TRUE) %>% collect() %>% getStats(nephropathy, DIABETIC_NEPHROPATHY)
+
+ANY_COMPLICATION %>% left_join(all_of(DIABETES_GOLDSTANDARD), copy= TRUE) %>% collect() %>% getStats(retinopathy, DIABETIC_RETINOPATHY)
+```

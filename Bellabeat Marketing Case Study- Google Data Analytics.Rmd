@@ -1,0 +1,183 @@
+---
+title: "Bellabeat case study"
+author: "Ashwini Shanbhogue"
+date: "08/23/2021"
+output: html_document
+---
+
+![](images/Bellabeat%20logo.png)
+
+The case study is presented in six parts, which are the milestones of this analysis, namely- Ask, prepare, process, analyze, share, and act.
+
+1.  [Ask:]{.ul} A statement of the business task
+
+The business task is to-
+
+-   analyze smart device usage data from non-Bellabeat smart devices to identify trends in device usage,
+
+-   select one Bellabeat product to apply these insights to and to come up with high-level recommendations for how these trends can inform Bellabeat marketing strategy and
+
+-   present the findings to the stakeholders- **Urška Sršen**: Bellabeat's cofounder and Chief Creative Officer, **Sando Mur**: Mathematician and Bellabeat's cofounder; key member of the Bellabeat executive team, and the **Bellabeat marketing analytics team**: A team of data analysts responsible for collecting, analyzing, and reporting data that helps guide Bellabeat's marketing strategy.
+
+2.  [Prepare:]{.ul} A description of all data sources used
+
+The data source is a public dataset, **FitBit Fitness Tracker Data** (CC0: Public Domain, made available through Mobius). This easily accessible Kaggle data set contains personal fitness tracker data from thirty Fitbit users organized in 18 files with data in both long and wide formats. Thirty eligible Fitbit users consented to the submission of personal tracker data, including minute-level output for physical activity, heart rate, and sleep monitoring. It includes information about daily activity, steps, and heart rate that can be used to explore users' habits. Individual entries are identified only by an ID number to protect the privacy of the users.
+
+The dataset was downloaded and saved on a personal computer in a folder named 'Bellabeat case study' along with the file containing the brief for the analysis. The folder containing the 18 files in the dataset was renamed to '4-12-16-to-5-12-16_Fitabase-Data' to make it easier to organize and read by machines and humans.
+
+ROCCC analysis of the data:
+
+-   Reliable: The data is not reliable because it is incomplete (weight and sleep data is not available for all IDs) and suffers from sample bias (very small dataset containing user information for only a month)
+
+-   Original: The data is not original. The data was collected via a survey by Amazon MTurk (second party), probably on the request of a client and shared by a Kaggle user, Mobius (third party)
+
+-   Comprehensive: The data is not comprehensive (very small dataset collected over a limited period of time. The survey collected data between 03.12.2016 and 05.12.2016 but the Kaggle dataset made available contains data from between 04.12.2016 and 05.12.2016 only)
+
+-   Current: The data is not current (it was created and last updated in 2016).
+
+-   Cited: It has been cited once (Torre, I., Sanchez, O., Koceva, F. *et al.* Supporting users to take informed decisions on privacy settings of personal devices. *Pers Ubiquit Comput* **22,** 345--364 (2018). <https://doi.org/10.1007/s00779-017-1068-3>).
+
+Overall, the data does not ROCCC.
+
+Although the dataset does not ROCCC, the kind of data available within it, i.e **time series data** should help answer the question being asked- 'what are the trends contained within fitness tracker usage data?'
+
+3.  [Process:]{.ul} Documentation of any cleaning or manipulation of data
+
+    R will be the data tool of choice for processing and analyzing data for its ability to both process large datasets quickly and create attractive visualizations.
+
+    \# Loading the R packages that will be used to process the dataset
+
+    ```{r}
+    library(tidyverse)
+    library(skimr)
+    library(janitor)
+    library(ggpubr)
+    ```
+
+    \# Creating dataframes to be analyzed
+
+    ```{r}
+    Activity <- read_csv("dailyActivity_merged.csv")
+    Sleep <- read_csv("sleepDay_merged.csv")
+    Weight <- read_csv("weightLogInfo_merged.csv")
+    ```
+
+    \# Checking for duplicate or missing values in all the dataframes
+
+    ```{r}
+    anyDuplicated(Activity)
+    anyDuplicated(Sleep)
+    anyDuplicated(Weight)
+
+    any(is.na(Activity))
+    any(is.na(Sleep))
+    any(is.na(Weight))
+    ```
+
+    None of the dataframes have any duplicate values except 'Sleep' which has 162 and none of the dataframes have missing values except Weight.
+
+    \# Eliminating duplicate records from 'Sleep' and missing values from Weight and checking that they were indeed eliminated.
+
+    ```{r}
+    Sleep <- distinct(Sleep)
+    anyDuplicated(Sleep)
+    Weight <- na.omit(Weight)
+    any(is.na(Weight))
+    ```
+
+    All duplicate and missing values have been eliminated.
+
+    \# Exploring the Activity, Sleep and Weight dataframes
+
+    ```{r}
+    skim_without_charts(Activity)
+    skim_without_charts(Sleep)
+    skim_without_charts(Weight)
+    ```
+
+    \# Manipulating the Activity dataframe by-
+
+    dropping three columns (TotalDistance, TrackerDistance, and LoggedActivitiesDistance) and creating four new columns, VeryActive, Moderate, LightlyActive and Sedentary from existing columns. Summary function is used to check the summary statistics of all columns.
+
+    ```{r}
+    Activity <- Activity %>% select(-TotalDistance, -TrackerDistance, -LoggedActivitiesDistance) %>% mutate (VeryActive= mean(VeryActiveMinutes), Moderate= mean(FairlyActiveMinutes), LightlyActive= mean(LightlyActiveMinutes), Sedentary= mean(SedentaryMinutes))
+
+    summary(Activity)
+    ```
+
+    \# Combining the Activity and Sleep dataframes
+
+    ```{r}
+    Merged1 <- merge(Activity, Sleep, by="Id")
+    ```
+
+4.  [Analyze:]{.ul} A summary of the data analysis
+
+    **How many unique users have documented their daily activities, sleep and weight?**
+
+    \# Calculating the number of unique participants in each dataframe
+
+    ```{r}
+    n_distinct(Activity$Id)
+    n_distinct(Sleep$Id)
+    n_distinct(Weight$Id)
+    ```
+
+    The Activity, Sleep and Weight dataframes have 33, 24 and 2 unique participants respectively. Fewer users have documented their sleep and weight than those that have documented their daily activity.
+
+    Are fewer users documenting their sleep because they take their device off their person while sleeping? How can the users be encouraged to keep it on?
+
+    Are fewer users documenting their weight because it needs to be done manually and they may not remember to do so every day? How can the users be encouraged to document their weight every day?
+
+    **How active is the average Bellabeat user?**
+
+    \# Calculating the activity level of the average Bellabeat user
+
+    ```{r}
+    w <- (Activity$VeryActive/60)*100/24
+    x <- (Activity$Moderate/60)*100/24
+    y <- (Activity$LightlyActive/60)*100/24
+    z <- (Activity$Sedentary/60)*100/24
+    a <- (100-(w+x+y+z))
+
+    paste("The average Bellabeat user spends", round(w[1:1], digits=1), "% of their day being very active, ", round(x[1:1], digits=1), "% of their day being moderately active, ", round(y[1:1], digits=1), "% of their day being lightly active, and", round(z[1:1], digits=1), "% of their day being sedentary. Activity levels are unknown for", round(a[1:1], digits=1), "% of the day.")
+    ```
+
+    The average Bellabeat user is sedentary for most of the day and is only lightly active, when active. How can the average user be encouraged to be more active through the day?
+
+    Activity levels for the average user are unknown for about 15% of their day. This is likely due to the user taking their Bellabeat device off their person for that duration. How can the user be encouraged to keep the device on longer?
+
+    **Does taking more steps in a day burn more calories?**
+
+    \# Creating a scatter plot of total steps taken in a day against the amount of calories burnt
+
+    ```{r}
+    ggplot(data=Activity, mapping = aes(x=TotalSteps, y=Calories)) + geom_point() + geom_smooth() + labs(x = "Steps in a day", y = "Calories burnt") + stat_cor(method = "pearson", label.x = 25000, label.y = 1000)
+    ```
+
+    There is a positive correlation between steps taken in a day and calories burnt, ie. as the number is steps taken in a day increase, amount of calories burnt also increase, as evidenced by the upward trending regression line and the positive 'R' value (correlation coefficient). The dip in the regression line towards the end is because of an outlier.
+
+    **Does number of times you sleep in a day affect the amount of calories burnt?**
+
+    \# Creating a box plot of total sleep records per day against the amount of calories burnt
+
+    ```{r}
+    ggplot(data=Merged1, mapping = aes(group=TotalSleepRecords, x=TotalSleepRecords, y=Calories)) + geom_boxplot() + labs(x = "Number of sleeps per day", y = "Calories burnt")
+    ```
+
+    It appears that the number of times the user sleeps per day does not have any effect on calories burnt.
+
+5.  [Share:]{.ul} Supporting visualizations and key findings
+
+    1.  Fewer users are documenting their sleep and weight compared to those that are documenting their daily activity.
+    2.  The average Bellabeat user is sedentary for most of the day and is only lightly active, when active.
+    3.  Activity levels for the average user are unknown for about 15% of their day.
+    4.  The amount of calories burnt by the user in a day increases proportionally with the number of steps they take in a day.
+
+6.  [Act:]{.ul} Top high-level insights based on the analysis
+
+    1.  Make Bellabeat wearables more comfortable to encourage users to keep them on while sleeping.
+    2.  Use the Bellabeat app and wearables to send reminders to document weight and to stay active through the day.
+    3.  Use the Bellabeat app and wearables to 'celebrate' with a special audio tone, visuals or vibration when the user hits a certain 'steps' goal.
+
+**Marketing strategy:** Bellabeat wearables are that trusted friend that will stay with you throughout the day, gently encourage you to be your healthiest self and will celebrate with you when you make progress in the right direction.
